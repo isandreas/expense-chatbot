@@ -19,7 +19,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SHEET_NAME = os.getenv("SHEET_NAME", "Expense Tracker 2026")
+SHEET_NAME = os.getenv("SHEET_NAME", "Expense Tracker")
 
 # AI clients setup
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -28,28 +28,28 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.0-flash"
 
-# Prompt terbaik untuk parsing expense (multilingual + Indo slang)
+# Expense parsing prompt (multilingual + Indonesian slang)
 PARSING_PROMPT = """
-Kamu adalah expense parser yang akurat untuk aplikasi tracking pengeluaran pribadi.
-Parse kalimat input pengguna berikut dalam bahasa Indonesia, Inggris, atau campur (slang OK):
+You are an accurate expense parser for a personal expense tracking app.
+Parse the following user input in Bahasa Indonesia, English, or mixed (slang OK):
 
 "$USER_INPUT"
 
-Aturan ketat:
-- Output HANYA JSON valid, tanpa teks tambahan, tanpa markdown, tanpa penjelasan.
-- Field wajib: date, description, category, type, tag, source, amount
-- date: format "YYYY-MM-DD". Gunakan hari ini "$TODAY" jika tidak disebutkan. Gunakan local timezone Jakarta default jika tidak ada info waktu.
-- description: ringkasan singkat dari input (max 64 char) dalam English, jangan translate nama produk dan tempat.
-- category: pilih salah satu atau infer: Groceries, Supplies, Transport, Utilities, Entertainment, Health, FnB, Shopping, Bill, Donation, Social, Other. Prioritaskan Groceries untuk makanan rumah, Supplies untuk perlengkapan rumah non-makanan.
-- type: "needs" jika essential (makan sehari-hari, transport kerja, tagihan, kebutuhan rumah), "wants" jika discretionary (makan luar, hiburan, belanja impulsif, luxury). Prioritaskan needs/wants dari input saat parse jika tersedia.
-- tag: highlighted tag jika ada (contoh: urgent, luxury, refund, friend-split), atau "" jika tidak ada.
-- source: metode pembayaran: Cash, BCA, BNI, CIMB, GoPay, Credit Card, dll. Infer jika tidak disebut.
-- amount: angka integer tanpa Rp, koma, atau titik (contoh: 50000 untuk Rp50.000). Konversi mata uang asing ke IDR berdasarkan kurs saat ini jika perlu.
+Strict rules:
+- Output ONLY valid JSON, no extra text, no markdown, no explanation.
+- Required fields: date, description, category, type, tag, source, amount
+- date: format "YYYY-MM-DD". Use today "$TODAY" if not mentioned. Default to Jakarta (WIB) timezone.
+- description: short summary of the input (max 64 chars) in English. Do not translate product names or place names. If the user wraps text in "{description}", use that text as-is for the description without summarizing.
+- category: pick one or infer: Groceries, Supplies, Transport, Utilities, Entertainment, Health, FnB, Shopping, Bill, Donation, Social, Other. Prefer Groceries for home food, Supplies for non-food household items.
+- type: "needs" if essential (daily meals, work transport, bills, household necessities), "wants" if discretionary (eating out, entertainment, impulse shopping, luxury). Prioritize needs/wants from the input if explicitly stated.
+- tag: highlighted tag if present (e.g. urgent, luxury, refund, friend-split), or "" if none.
+- source: payment method: Cash, BCA, BNI, CIMB, GoPay, Credit Card, etc. Infer if not mentioned.
+- amount: integer without Rp, commas, or dots (e.g. 50000 for Rp50.000). Convert foreign currencies to IDR at current rates if needed.
 
-Jika input tidak jelas atau bukan expense → return {"error": "invalid_input"}
+If the input is unclear or not an expense → return {"error": "invalid_input"}
 
-Contoh output:
-{"date":"2026-03-12","category":"Groceries","type":"needs","tag":"","source":"Cash","amount":45000,"description":"Beli beras dan sayur"}
+Example output:
+{"date":"2026-03-12","category":"Groceries","type":"needs","tag":"","source":"Cash","amount":45000,"description":"Rice and vegetables"}
 """
 
 # Gspread setup

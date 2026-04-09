@@ -19,7 +19,7 @@ A Telegram bot that automatically logs expenses to Google Sheets using AI-powere
 ```
 User (Telegram)
     │
-    │  "makan bakso 24000 cash"
+    │  "makan bakso 2 mangkok 24000 cash"
     ▼
 Telegram Bot
     │
@@ -34,7 +34,7 @@ AI Parser (with retry)
 JSON Output
     {
       "date": "2026-03-13",
-      "description": "Bakso 2 pcs",
+      "description": "Bakso 2 bowls",
       "category": "FnB",
       "type": "wants",
       "tag": "",
