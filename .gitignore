@@ -30,3 +30,4 @@ token.json
 # Test scripts
 test_*.py
 list_model.py
+.vercel
