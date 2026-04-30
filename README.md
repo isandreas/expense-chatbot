@@ -20,6 +20,7 @@ A Telegram bot that automatically logs expenses to Google Sheets using AI-powere
 User (Telegram)
     │
     │  "makan bakso 2 mangkok 24000 cash"
+    │  — or multiple lines for batch input —
     ▼
 Telegram
     │
@@ -28,12 +29,20 @@ Telegram
 Vercel Function (api/webhook.py)
     │
     ├─ Parse incoming update
-    ├─ AI Parser (with retry)
-    │  ├─ Attempt 1-3: Groq (llama-3.3-70b)
-    │  └─ Attempt 4: Gemini (2.0-flash)
-    ├─ Append row to Google Sheets
-    ├─ Send reply using Telegram sendMessage API
-    └─ Return HTTP 200 to avoid Telegram retries
+    ├─ Segment lines (split by newline, ignore blanks)
+    │
+    ├─ Single line:
+    │  ├─ AI Parser (with retry)
+    │  │  ├─ Attempt 1-3: Groq (llama-3.3-70b)
+    │  │  └─ Attempt 4: Gemini (2.0-flash)
+    │  ├─ Append row to Google Sheets
+    │  └─ Send detailed receipt reply
+    │
+    └─ Batch (multiple lines, max 20):
+       ├─ AI Parser per line (with retry, independent)
+       ├─ Collect successful rows + failures
+       ├─ Append all valid rows in one batch write
+       └─ Send summary reply (saved count, total, failed lines)
 ```
 
 ## Sheet Columns
@@ -51,6 +60,10 @@ Vercel Function (api/webhook.py)
 - Bahasa Indonesia, English, or mixed
 - Slang supported: "65rb", "35 ribu", "2jt"
 - Auto-infers date, category, and payment method
+- **Batch input**: send multiple expenses at once, one per line (max 20)
+  - Valid lines are saved, invalid lines are reported individually
+  - Wrap a line in double quotes to preserve the description as-is:
+    `"Toko Desa - Ultramilk 1L dan Roti Kasino" cash 30000`
 
 ## Setup
 
@@ -122,9 +135,17 @@ pytest tests/test_webhook_e2e.py -v
 
 ## Testing
 
-- E2E tests are in `tests/test_webhook_e2e.py` and use `httpx`.
-- The suite starts a local webhook server and posts Telegram-like payloads.
-- Tests are integration-style and use real provider credentials from `.env`.
+- Unit tests are in `tests/test_webhook_batch.py` and run without real credentials (AI calls are mocked).
+- E2E tests are in `tests/test_webhook_e2e.py` and use `httpx` with real provider credentials from `.env`.
+- The E2E suite starts a local webhook server and posts Telegram-like payloads.
+
+```bash
+# Fast unit tests (no credentials needed)
+pytest tests/test_webhook_batch.py -v
+
+# Full integration tests
+pytest tests/test_webhook_e2e.py -v
+```
 
 ## License
 

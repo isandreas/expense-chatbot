@@ -43,6 +43,8 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.0-flash"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+MAX_BATCH_LINES = 20
+REQUIRED_FIELDS = {"date", "description", "category", "type", "tag", "source", "amount"}
 
 # Expense parsing prompt
 PARSING_PROMPT = """
@@ -55,8 +57,8 @@ Strict rules:
 - Output ONLY valid JSON, no extra text, no markdown, no explanation.
 - Required fields: date, description, category, type, tag, source, amount
 - date: format "YYYY-MM-DD". Use today "$TODAY" if not mentioned. Default to Jakarta (WIB) timezone.
-- description: short summary of the input (max 64 chars) in English. Do not translate product names or place names. If the user wraps text in "{description}", use that text as-is for the description without summarizing.
-- category: pick one or infer: Groceries, Supplies, Transport, Utilities, Entertainment, Health, FnB, Shopping, Bill, Donation, Social, Other. Prefer Groceries for home food, Supplies for non-food household items.
+- description: short summary of the input (max 64 chars) in English. Do not translate product names or place names. If the user starts the input with a double-quoted string (e.g. "Toko Desa - Ultramilk 1L"), use that quoted text as-is for the description without summarizing or translating.
+- category: pick one or infer: Groceries, Supplies, Transport, Utilities, Entertainment, Health, FnB, Shopping, Bill, Donation, Social, Other. Prefer Groceries for home food, Supplies for non-food household items including cleaning products (e.g. sabun, detergen, pel, karbol, obat pel, pembersih lantai).
 - type: "needs" if essential (daily meals, work transport, bills, household necessities), "wants" if discretionary (eating out, entertainment, impulse shopping, luxury). Prioritize needs/wants from the input if explicitly stated.
 - tag: highlighted tag if present (e.g. urgent, luxury, refund, friend-split), or "" if none.
 - source: payment method: Cash, BCA, BNI, CIMB, GoPay, Credit Card, etc. Infer if not mentioned.
@@ -135,6 +137,22 @@ def send_message(chat_id: int, text: str):
     log_event("INFO", "Reply sent to chat_id=%s", chat_id)
 
 
+def parse_single_expense(line: str, today: str) -> dict:
+    """Parse one expense line via AI. Returns validated dict or raises."""
+    full_prompt = PARSING_PROMPT.replace("$USER_INPUT", line).replace("$TODAY", today)
+    json_str = call_ai_with_retry(full_prompt)
+    parsed = json.loads(json_str)  # raises json.JSONDecodeError if malformed
+    if "error" in parsed:
+        raise ValueError("invalid_input")
+    missing = REQUIRED_FIELDS - set(parsed.keys())
+    if missing:
+        raise ValueError(f"missing fields: {', '.join(sorted(missing))}")
+    if not isinstance(parsed["amount"], (int, float)):
+        raise ValueError("amount is not numeric")
+    parsed["amount"] = int(parsed["amount"])
+    return parsed
+
+
 def handle_update(body: dict):
     message = body.get("message")
     if not message:
@@ -158,21 +176,40 @@ def handle_update(body: dict):
             "Halo! Kirim pesan expense seperti:\n"
             '"Beli makan siang 65rb pake OVO hari ini"\n'
             '"Transport Gojek 35 ribu kemarin cash"\n'
-            "Aku akan parse & catat otomatis ke sheet.",
+            "Aku akan parse & catat otomatis ke sheet.\n\n"
+            "Untuk beberapa transaksi sekaligus, pisahkan dengan baris baru.",
         )
         return
 
-    # Parse expense
+    # Segment lines — blank lines are ignored
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    is_batch = len(lines) > 1
+
+    if len(lines) > MAX_BATCH_LINES:
+        send_message(
+            chat_id,
+            f"Terlalu banyak transaksi sekaligus (maks {MAX_BATCH_LINES} baris). "
+            "Mohon kirim lebih sedikit.",
+        )
+        return
+
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
-    full_prompt = PARSING_PROMPT.replace("$USER_INPUT", text).replace("$TODAY", today)
 
-    try:
-        json_str = call_ai_with_retry(full_prompt)
-        parsed = json.loads(json_str)
-
-        if "error" in parsed:
+    if not is_batch:
+        # --- Single expense: original detailed receipt ---
+        try:
+            parsed = parse_single_expense(lines[0], today)
+        except ValueError:
             send_message(chat_id, "Maaf, input tidak dikenali sebagai expense. Coba lagi ya!")
+            return
+        except json.JSONDecodeError:
+            logger.exception("Failed to decode AI JSON response")
+            send_message(chat_id, "Parsing gagal (JSON invalid dari AI). Coba input lebih jelas.")
+            return
+        except Exception as e:
+            logger.exception("Unhandled error while processing update")
+            send_message(chat_id, f"Error: {str(e)}. Coba lagi nanti.")
             return
 
         row = [
@@ -185,8 +222,14 @@ def handle_update(body: dict):
             parsed["amount"],
         ]
 
-        worksheet = get_worksheet()
-        worksheet.append_row(row)
+        try:
+            worksheet = get_worksheet()
+            worksheet.append_row(row)
+        except Exception as e:
+            logger.exception("Failed to write to Google Sheets")
+            send_message(chat_id, f"Gagal menyimpan ke sheet: {str(e)}")
+            return
+
         log_event(
             "INFO",
             "Sheet row appended chat_id=%s category=%s amount=%s",
@@ -206,13 +249,69 @@ def handle_update(body: dict):
             f"Jumlah: Rp{parsed['amount']:,}\n"
         )
         send_message(chat_id, reply)
+        return
 
-    except json.JSONDecodeError:
-        logger.exception("Failed to decode AI JSON response")
-        send_message(chat_id, "Parsing gagal (JSON invalid dari AI). Coba input lebih jelas.")
-    except Exception as e:
-        logger.exception("Unhandled error while processing update")
-        send_message(chat_id, f"Error: {str(e)}. Coba lagi nanti.")
+    # --- Batch mode: parse each line independently ---
+    successful_rows = []
+    successful_parsed = []
+    failures = []  # list of (line_index, line_text, reason)
+
+    for i, line in enumerate(lines, start=1):
+        try:
+            parsed = parse_single_expense(line, today)
+            successful_rows.append([
+                parsed["date"],
+                parsed["description"],
+                parsed["category"],
+                parsed["type"],
+                parsed["tag"],
+                parsed["source"],
+                parsed["amount"],
+            ])
+            successful_parsed.append(parsed)
+            log_event("INFO", "Batch line %s/%s parsed OK amount=%s", i, len(lines), parsed["amount"])
+        except ValueError as e:
+            failures.append((i, line, str(e)))
+            log_event("WARNING", "Batch line %s failed: %s", i, e)
+        except json.JSONDecodeError:
+            failures.append((i, line, "JSON invalid dari AI"))
+            log_event("WARNING", "Batch line %s JSON decode error", i)
+        except Exception as e:
+            failures.append((i, line, str(e)))
+            log_event("WARNING", "Batch line %s unhandled error: %s", i, e)
+
+    # Write all successful rows in one batch call
+    if successful_rows:
+        try:
+            worksheet = get_worksheet()
+            worksheet.append_rows(successful_rows)
+            log_event(
+                "INFO",
+                "Batch sheet write chat_id=%s rows=%s",
+                chat_id,
+                len(successful_rows),
+            )
+        except Exception as e:
+            logger.exception("Failed to batch write to Google Sheets")
+            send_message(chat_id, f"Gagal menyimpan ke sheet: {str(e)}")
+            return
+
+    # Compose batch summary reply
+    parts = []
+    if successful_rows:
+        total_amount = sum(p["amount"] for p in successful_parsed)
+        parts.append(f"✅ Tersimpan: {len(successful_rows)}/{len(lines)} transaksi")
+        parts.append(f"💰 Total: Rp{total_amount:,}")
+        for p in successful_parsed:
+            parts.append(f"  • {p['description']} — Rp{p['amount']:,} ({p['category']})")
+
+    if failures:
+        parts.append(f"\n❌ Gagal: {len(failures)}/{len(lines)} transaksi")
+        for idx, line_text, reason in failures:
+            short = line_text[:40] + "..." if len(line_text) > 40 else line_text
+            parts.append(f"  • Baris {idx}: \"{short}\" → {reason}")
+
+    send_message(chat_id, "\n".join(parts))
 
 
 class handler(BaseHTTPRequestHandler):
