@@ -2,7 +2,6 @@ import base64
 import json
 import logging
 import os
-import re
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -63,7 +62,6 @@ FIX_HELP_TEXT = (
     "2. grab ke kantor 35000 gopay\n\n"
     "Nomor urut hanya untuk memudahkan baca dan akan diabaikan saat diproses."
 )
-NUMBERED_LINE_PATTERN = re.compile(r"^\s*\d+\s*[\.\)]\s+(.+)$")
 
 # Expense parsing prompt
 PARSING_PROMPT = """
@@ -179,8 +177,15 @@ def extract_expense_lines(text: str) -> list[str]:
 
     normalized = []
     for line in lines:
-        match = NUMBERED_LINE_PATTERN.match(line)
-        normalized.append(match.group(1).strip() if match else line)
+        i = 0
+        while i < len(line) and line[i].isdigit():
+            i += 1
+        if i > 0 and i < len(line) and line[i] in {".", ")"}:
+            rest = line[i + 1:]
+            if rest.startswith(" "):
+                normalized.append(rest.strip())
+                continue
+        normalized.append(line)
     return normalized
 
 
