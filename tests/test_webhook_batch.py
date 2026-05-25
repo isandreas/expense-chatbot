@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from api.webhook import MAX_BATCH_LINES, extract_expense_lines, handle_update, parse_single_expense
+from api.webhook import MAX_BATCH_LINES, PARSE_CONFIRM_CALLBACK, extract_expense_lines, handle_update, parse_single_expense
 
 VALID_RESPONSE = json.dumps({
     "date": "2026-04-30",
@@ -159,3 +159,47 @@ class TestFixTemplateButtons:
         assert args[0] == 99
         assert "Perbaikan:" in args[1]
         mock_answer.assert_called_once_with("cb_123")
+
+    def test_single_success_reply_has_confirmation_buttons(self):
+        body = {
+            "message": {
+                "chat": {"id": 77},
+                "from": {"username": "tester"},
+                "text": "makan 25000 cash",
+            }
+        }
+        parsed = {
+            "date": "2026-04-30",
+            "description": "makan",
+            "category": "FnB",
+            "type": "needs",
+            "tag": "",
+            "source": "Cash",
+            "amount": 25000,
+        }
+        with patch("api.webhook.parse_single_expense", return_value=parsed), patch("api.webhook.get_worksheet") as mock_ws, patch("api.webhook.send_message") as mock_send:
+            handle_update(body)
+
+        mock_ws.return_value.append_row.assert_called_once()
+        _, kwargs = mock_send.call_args
+        keyboard = kwargs["reply_markup"]["inline_keyboard"][0]
+        callback_data = {button["callback_data"] for button in keyboard}
+        assert PARSE_CONFIRM_CALLBACK in callback_data
+        assert "fix_template_single" in callback_data
+
+    def test_callback_confirm_sends_ack_message(self):
+        body = {
+            "callback_query": {
+                "id": "cb_ok",
+                "data": PARSE_CONFIRM_CALLBACK,
+                "message": {"chat": {"id": 44}},
+            }
+        }
+        with patch("api.webhook.send_message") as mock_send, patch("api.webhook.answer_callback_query") as mock_answer:
+            handle_update(body)
+
+        mock_send.assert_called_once()
+        args, _ = mock_send.call_args
+        assert args[0] == 44
+        assert "sudah sesuai" in args[1]
+        mock_answer.assert_called_once_with("cb_ok")

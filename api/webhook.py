@@ -46,6 +46,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 MAX_BATCH_LINES = 20
 REQUIRED_FIELDS = {"date", "description", "category", "type", "tag", "source", "amount"}
 FIX_COMMANDS = {"/fix", "fix", "perbaikan", "koreksi"}
+PARSE_CONFIRM_CALLBACK = "parse_confirm_ok"
 FIX_TEMPLATES = {
     "fix_template_single": "Perbaikan:\n1. <transaksi benar>",
     "fix_template_multi": (
@@ -213,6 +214,8 @@ def handle_update(body: dict):
         template_text = FIX_TEMPLATES.get(template_key)
         if chat_id and template_text:
             send_message(chat_id, template_text)
+        elif chat_id and template_key == PARSE_CONFIRM_CALLBACK:
+            send_message(chat_id, "Sip, parsing-nya sudah sesuai dan transaksi sudah tercatat ✅")
         callback_query_id = callback_query.get("id")
         if callback_query_id:
             answer_callback_query(callback_query_id)
@@ -327,7 +330,18 @@ def handle_update(body: dict):
             f"Source: {parsed['source']}\n"
             f"Jumlah: Rp{parsed['amount']:,}\n"
         )
-        send_message(chat_id, reply)
+        send_message(
+            chat_id,
+            reply,
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {"text": "✅ Sudah sesuai", "callback_data": PARSE_CONFIRM_CALLBACK},
+                        {"text": "✏️ Perbaiki", "callback_data": "fix_template_single"},
+                    ]
+                ]
+            },
+        )
         return
 
     # --- Batch mode: parse each line independently ---
