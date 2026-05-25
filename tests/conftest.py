@@ -29,8 +29,11 @@ def captured_messages():
     """Intercept send_message calls and capture (chat_id, text) tuples."""
     messages = []
 
-    def fake_send(chat_id: int, text: str):
-        messages.append({"chat_id": chat_id, "text": text})
+    def fake_send(chat_id: int, text: str, **kwargs):
+        item = {"chat_id": chat_id, "text": text}
+        if kwargs:
+            item.update(kwargs)
+        messages.append(item)
 
     with patch("api.webhook.send_message", side_effect=fake_send):
         yield messages
