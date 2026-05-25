@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from api.webhook import MAX_BATCH_LINES, parse_single_expense
+from api.webhook import MAX_BATCH_LINES, extract_expense_lines, handle_update, parse_single_expense
 
 VALID_RESPONSE = json.dumps({
     "date": "2026-04-30",
@@ -104,6 +104,19 @@ class TestLineSplitting:
         lines = [f"expense {i}" for i in range(MAX_BATCH_LINES + 1)]
         assert len(lines) > MAX_BATCH_LINES
 
+    def test_fix_prefix_and_numbering_are_normalized(self):
+        text = "Perbaikan:\n1. makan bakso 24000 cash\n2) grab ke kantor 35000 gopay"
+        lines = extract_expense_lines(text)
+        assert lines == [
+            "makan bakso 24000 cash",
+            "grab ke kantor 35000 gopay",
+        ]
+
+    def test_number_like_amount_not_treated_as_list_number(self):
+        text = "1.500.000 transfer BCA"
+        lines = extract_expense_lines(text)
+        assert lines == ["1.500.000 transfer BCA"]
+
 
 class TestConstants:
     def test_max_batch_lines_is_positive(self):
@@ -111,3 +124,38 @@ class TestConstants:
 
     def test_max_batch_lines_is_twenty(self):
         assert MAX_BATCH_LINES == 20
+
+
+class TestFixTemplateButtons:
+    def test_fix_command_sends_buttons(self):
+        body = {
+            "message": {
+                "chat": {"id": 1},
+                "from": {"username": "tester"},
+                "text": "/fix",
+            }
+        }
+        with patch("api.webhook.send_message") as mock_send:
+            handle_update(body)
+
+        assert mock_send.call_count == 1
+        _, kwargs = mock_send.call_args
+        assert "reply_markup" in kwargs
+        assert "inline_keyboard" in kwargs["reply_markup"]
+
+    def test_callback_template_sends_template_text(self):
+        body = {
+            "callback_query": {
+                "id": "cb_123",
+                "data": "fix_template_multi",
+                "message": {"chat": {"id": 99}},
+            }
+        }
+        with patch("api.webhook.send_message") as mock_send, patch("api.webhook.answer_callback_query") as mock_answer:
+            handle_update(body)
+
+        mock_send.assert_called_once()
+        args, _ = mock_send.call_args
+        assert args[0] == 99
+        assert "Perbaikan:" in args[1]
+        mock_answer.assert_called_once_with("cb_123")

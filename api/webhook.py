@@ -45,6 +45,23 @@ GEMINI_MODEL = "gemini-2.0-flash"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 MAX_BATCH_LINES = 20
 REQUIRED_FIELDS = {"date", "description", "category", "type", "tag", "source", "amount"}
+FIX_COMMANDS = {"/fix", "fix", "perbaikan", "koreksi"}
+FIX_TEMPLATES = {
+    "fix_template_single": "Perbaikan:\n1. <transaksi benar>",
+    "fix_template_multi": (
+        "Perbaikan:\n"
+        "1. <transaksi benar 1>\n"
+        "2. <transaksi benar 2>\n"
+        "3. <transaksi benar 3>"
+    ),
+}
+FIX_HELP_TEXT = (
+    "Kamu bisa kirim perbaikan dengan format berikut:\n\n"
+    "Perbaikan:\n"
+    "1. makan bakso 24000 cash\n"
+    "2. grab ke kantor 35000 gopay\n\n"
+    "Nomor urut hanya untuk memudahkan baca dan akan diabaikan saat diproses."
+)
 
 # Expense parsing prompt
 PARSING_PROMPT = """
@@ -126,8 +143,11 @@ def call_ai_with_retry(prompt: str) -> str:
         raise Exception("Semua AI provider gagal. Coba lagi nanti.")
 
 
-def send_message(chat_id: int, text: str):
-    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+def send_message(chat_id: int, text: str, reply_markup: dict | None = None):
+    payload_obj = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload_obj["reply_markup"] = reply_markup
+    payload = json.dumps(payload_obj).encode("utf-8")
     req = urllib.request.Request(
         f"{TELEGRAM_API}/sendMessage",
         data=payload,
@@ -135,6 +155,38 @@ def send_message(chat_id: int, text: str):
     )
     urllib.request.urlopen(req)
     log_event("INFO", "Reply sent to chat_id=%s", chat_id)
+
+
+def answer_callback_query(callback_query_id: str):
+    payload = json.dumps({"callback_query_id": callback_query_id}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{TELEGRAM_API}/answerCallbackQuery",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    urllib.request.urlopen(req)
+
+
+def extract_expense_lines(text: str) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return lines
+
+    if lines[0].lower().rstrip(":") in FIX_COMMANDS:
+        lines = lines[1:]
+
+    normalized = []
+    for line in lines:
+        i = 0
+        while i < len(line) and line[i].isdigit():
+            i += 1
+        if i > 0 and i < len(line) and line[i] in {".", ")"}:
+            rest = line[i + 1:]
+            if rest.startswith(" "):
+                normalized.append(rest.strip())
+                continue
+        normalized.append(line)
+    return normalized
 
 
 def parse_single_expense(line: str, today: str) -> dict:
@@ -154,6 +206,18 @@ def parse_single_expense(line: str, today: str) -> dict:
 
 
 def handle_update(body: dict):
+    callback_query = body.get("callback_query")
+    if callback_query:
+        chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+        template_key = callback_query.get("data")
+        template_text = FIX_TEMPLATES.get(template_key)
+        if chat_id and template_text:
+            send_message(chat_id, template_text)
+        callback_query_id = callback_query.get("id")
+        if callback_query_id:
+            answer_callback_query(callback_query_id)
+        return
+
     message = body.get("message")
     if not message:
         log_event("INFO", "Webhook update ignored: no message field")
@@ -181,8 +245,23 @@ def handle_update(body: dict):
         )
         return
 
+    if text.lower() in FIX_COMMANDS:
+        send_message(
+            chat_id,
+            FIX_HELP_TEXT,
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {"text": "Template 1 perbaikan", "callback_data": "fix_template_single"},
+                        {"text": "Template multi perbaikan", "callback_data": "fix_template_multi"},
+                    ]
+                ]
+            },
+        )
+        return
+
     # Segment lines — blank lines are ignored
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = extract_expense_lines(text)
     is_batch = len(lines) > 1
 
     if len(lines) > MAX_BATCH_LINES:
