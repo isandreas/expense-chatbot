@@ -18,6 +18,7 @@ build/
 # IDE
 .vscode/
 .idea/
+.github/
 
 # OS
 .DS_Store

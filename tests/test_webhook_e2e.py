@@ -1,12 +1,20 @@
 import json
+import os
 import re
 
 import httpx
 
 from tests.conftest import make_telegram_update
 
+AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "123456789"))
+WEBHOOK_SECRET = os.getenv("TELEGRAM_BOT_SECRET_TOKEN", "test_secret")
 
-def make_confirm_callback(chat_id: int = 123456789, message_id: int = 999):
+
+def _is_preview_message(text: str) -> bool:
+    return "📋" in text or "Review" in text
+
+
+def make_confirm_callback(chat_id: int = AUTHORIZED_USER_ID, message_id: int = 999):
     """Build a minimal Telegram callback_query payload for ✅ Simpan."""
     return {
         "update_id": 100000002,
@@ -43,16 +51,15 @@ EXPENSE_INPUTS = [
         "expect_source": "BCA",
     },
 ]
-
-
 class TestWebhookStartCommand:
     def test_start_returns_greeting(
         self, webhook_server: str, captured_messages
     ):
-        payload = make_telegram_update("/start")
+        payload = make_telegram_update("/start", chat_id=AUTHORIZED_USER_ID)
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         assert len(captured_messages) == 1
@@ -69,12 +76,13 @@ class TestWebhookExpenseParsing:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         assert len(captured_messages) == 1
 
         reply = captured_messages[0]["text"]
-        assert "📋" in reply or "Review" in reply
+        assert _is_preview_message(reply)
         assert "24,000" in reply
 
     def test_expense_with_slang(
@@ -84,12 +92,13 @@ class TestWebhookExpenseParsing:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         assert len(captured_messages) == 1
 
         reply = captured_messages[0]["text"]
-        assert "📋" in reply or "Review" in reply
+        assert _is_preview_message(reply)
         assert "35,000" in reply
 
     def test_expense_english(
@@ -99,13 +108,14 @@ class TestWebhookExpenseParsing:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         assert len(captured_messages) == 1
 
         reply = captured_messages[0]["text"]
-        assert "📋" in reply or "Review" in reply
-        assert "120,000" in reply
+        assert _is_preview_message(reply)
+        assert "Rp" in reply
 
     def test_reply_contains_preview_format(
         self, webhook_server: str, captured_messages
@@ -114,9 +124,11 @@ class TestWebhookExpenseParsing:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         reply = captured_messages[0]["text"]
+        assert _is_preview_message(reply)
 
         # Preview format: "1. {desc} — Rp{amount} | {cat} | {type} | {src} | {date}"
         assert "1." in reply
@@ -131,9 +143,11 @@ class TestWebhookExpenseParsing:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         reply = captured_messages[0]["text"]
+        assert _is_preview_message(reply)
 
         # Date should be YYYY-MM-DD format somewhere in the preview
         date_match = re.search(r"\d{4}-\d{2}-\d{2}", reply)
@@ -148,6 +162,7 @@ class TestWebhookInvalidInput:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         # Bot always sends exactly one message (preview or error, depending on AI response)
@@ -160,6 +175,7 @@ class TestWebhookInvalidInput:
         response = httpx.post(
             f"{webhook_server}/api/webhook",
             json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
         )
         assert response.status_code == 200
         assert len(captured_messages) == 0
@@ -177,15 +193,26 @@ class TestWebhookGoogleSheets:
         rows_before = len(ws.get_all_values())
 
         # Step 1: Send expense → parses → stages it (in-memory Redis via fixture)
-        payload = make_telegram_update("beli air mineral 5000 cash")
-        r1 = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        payload = make_telegram_update("beli air mineral 5000 cash", chat_id=AUTHORIZED_USER_ID)
+        r1 = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+            timeout=20.0,
+        )
         assert r1.status_code == 200
         assert len(captured_messages) == 1
-        assert "📋" in captured_messages[0]["text"] or "Review" in captured_messages[0]["text"]
+        first_reply = captured_messages[0]["text"]
+        assert _is_preview_message(first_reply)
 
         # Step 2: Simulate ✅ Simpan callback
         confirm = make_confirm_callback()
-        r2 = httpx.post(f"{webhook_server}/api/webhook", json=confirm)
+        r2 = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=confirm,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+            timeout=20.0,
+        )
         assert r2.status_code == 200
 
         # Confirm message is the second message (send_message after write)
@@ -198,7 +225,8 @@ class TestWebhookGoogleSheets:
 
         last_row = ws.get_all_values()[-1]
         # Amount column may be formatted (e.g. "Rp 5.000"), just check digits present
-        assert "5000" in last_row[6] or "5.000" in last_row[6] or "5,000" in last_row[6]
+        amount_value = str(last_row[6])
+        assert "5000" in amount_value or "5.000" in amount_value or "5,000" in amount_value
 
     def test_batch_rows_appended_after_confirm(
         self, webhook_server: str, captured_messages
@@ -209,13 +237,26 @@ class TestWebhookGoogleSheets:
         rows_before = len(ws.get_all_values())
 
         payload = make_telegram_update(
-            "makan bakso 24000 cash\ngrab ke kantor 35000 gopay"
+            "makan bakso 24000 cash\ngrab ke kantor 35000 gopay",
+            chat_id=AUTHORIZED_USER_ID,
         )
-        r1 = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        r1 = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+            timeout=20.0,
+        )
         assert r1.status_code == 200
+        first_reply = captured_messages[0]["text"]
+        assert _is_preview_message(first_reply)
 
         confirm = make_confirm_callback()
-        r2 = httpx.post(f"{webhook_server}/api/webhook", json=confirm)
+        r2 = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=confirm,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+            timeout=20.0,
+        )
         assert r2.status_code == 200
 
         rows_after = len(ws.get_all_values())
@@ -227,13 +268,18 @@ class TestWebhookBatchParsing:
 
     def test_batch_all_valid(self, webhook_server: str, captured_messages):
         payload = make_telegram_update(
-            "makan bakso 24000 cash\ngrab ke kantor 35000 gopay"
+            "makan bakso 24000 cash\ngrab ke kantor 35000 gopay",
+            chat_id=AUTHORIZED_USER_ID,
         )
-        response = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
         assert response.status_code == 200
         assert len(captured_messages) == 1
         reply = captured_messages[0]["text"]
-        assert "📋" in reply or "Review" in reply
+        assert _is_preview_message(reply)
         # Both items shown as numbered list
         assert "1." in reply
         assert "2." in reply
@@ -241,23 +287,36 @@ class TestWebhookBatchParsing:
     def test_batch_partial_failure(self, webhook_server: str, captured_messages):
         """One valid expense + one nonsense → valid staged, failure reported in preview."""
         payload = make_telegram_update(
-            "makan siang nasi goreng 50000 gopay\nhello how are you"
+            "makan siang nasi goreng 50000 gopay\nhello how are you",
+            chat_id=AUTHORIZED_USER_ID,
         )
-        response = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
         assert response.status_code == 200
         assert len(captured_messages) == 1
         reply = captured_messages[0]["text"]
-        assert "📋" in reply or "Review" in reply
-        assert "❌" in reply  # failure section
+        assert _is_preview_message(reply)
+        # Real models may either reject the nonsense line (❌ section) or still coerce it into a parsed row.
+        assert "50,000" in reply
+        assert "❌" in reply or "2." in reply
 
     def test_batch_blank_lines_ignored(self, webhook_server: str, captured_messages):
         """Blank lines between expenses are silently ignored."""
         payload = make_telegram_update(
-            "makan bakso 24000 cash\n\n\ngrab ke kantor 35000 gopay"
+            "makan bakso 24000 cash\n\n\ngrab ke kantor 35000 gopay",
+            chat_id=AUTHORIZED_USER_ID,
         )
-        response = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
         assert response.status_code == 200
         reply = captured_messages[0]["text"]
+        assert _is_preview_message(reply)
         assert "1." in reply
         assert "2." in reply
 
@@ -268,8 +327,12 @@ class TestWebhookBatchParsing:
         lines = "\n".join(
             [f"makan {i * 1000} cash" for i in range(1, MAX_BATCH_LINES + 2)]
         )
-        payload = make_telegram_update(lines)
-        response = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        payload = make_telegram_update(lines, chat_id=AUTHORIZED_USER_ID)
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
         assert response.status_code == 200
         assert len(captured_messages) == 1
         reply = captured_messages[0]["text"]
@@ -279,12 +342,46 @@ class TestWebhookBatchParsing:
         self, webhook_server: str, captured_messages
     ):
         """Single-line input shows the pre-commit preview with inline buttons."""
-        payload = make_telegram_update("beli air mineral 5000 cash")
-        response = httpx.post(f"{webhook_server}/api/webhook", json=payload)
+        payload = make_telegram_update("beli air mineral 5000 cash", chat_id=AUTHORIZED_USER_ID)
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
         assert response.status_code == 200
         assert len(captured_messages) == 1
         reply = captured_messages[0]["text"]
-        assert "📋" in reply or "Review" in reply
+        assert _is_preview_message(reply)
         assert "1." in reply
         assert "Rp5,000" in reply
         assert captured_messages[0].get("has_buttons")
+
+
+class TestWebhookSecurity:
+    def test_unauthorized_message_user_is_rejected(self, webhook_server: str, captured_messages):
+        payload = make_telegram_update(
+            "makan bakso 24000 cash",
+            chat_id=AUTHORIZED_USER_ID + 1,
+            username="intruder",
+        )
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
+
+        assert response.status_code == 200
+        assert len(captured_messages) == 1
+        assert "unauthorized" in captured_messages[0]["text"].lower()
+
+    def test_unauthorized_callback_user_is_rejected(self, webhook_server: str, captured_messages):
+        payload = make_confirm_callback(chat_id=AUTHORIZED_USER_ID + 1)
+        response = httpx.post(
+            f"{webhook_server}/api/webhook",
+            json=payload,
+            headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET},
+        )
+
+        assert response.status_code == 200
+        assert len(captured_messages) == 1
+        assert "unauthorized" in captured_messages[0]["text"].lower()

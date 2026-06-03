@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 from http.server import HTTPServer
 from unittest.mock import patch
@@ -7,6 +8,12 @@ import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Ensure test env has webhook secret and user id so authorization gates pass in tests
+os.environ.setdefault("TELEGRAM_BOT_SECRET_TOKEN", "test_secret")
+os.environ.setdefault("TELEGRAM_USER_ID", "123456789")
+
+AUTHORIZED_TEST_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "123456789"))
 
 # Import after load_dotenv so env vars are available at module level
 from api.webhook import handler
@@ -59,7 +66,7 @@ def captured_messages():
         yield messages
 
 
-def make_telegram_update(text: str, chat_id: int = 123456789, username: str = "testuser"):
+def make_telegram_update(text: str, chat_id: int = AUTHORIZED_TEST_USER_ID, username: str = "testuser"):
     """Build a minimal Telegram Update payload."""
     return {
         "update_id": 100000001,
