@@ -3,21 +3,15 @@ Unit tests for batch expense parsing logic.
 These tests mock call_ai_with_retry so no real AI or network calls are made.
 """
 import json
+import os
 from unittest.mock import patch
 
 import pytest
 
-from api.webhook import (
-    CANCEL_CALLBACK,
-    CONFIRM_CALLBACK,
-    MAX_BATCH_LINES,
-    _resolve_fix_value,
-    extract_expense_lines,
-    handle_update,
-    parse_all_fix_commands,
-    parse_fix_command,
-    parse_single_expense,
-)
+from api.webhook import (CANCEL_CALLBACK, CONFIRM_CALLBACK, MAX_BATCH_LINES,
+                         _resolve_fix_value, extract_expense_lines,
+                         handle_update, parse_all_fix_commands,
+                         parse_fix_command, parse_single_expense)
 
 VALID_RESPONSE = json.dumps({
     "date": "2026-04-30",
@@ -38,6 +32,8 @@ QUOTED_DESC_RESPONSE = json.dumps({
     "source": "Cash",
     "amount": 30000,
 })
+
+AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "123456789"))
 
 
 class TestParseSingleExpense:
@@ -264,7 +260,7 @@ class TestConfirmationFlow:
         body = {
             "message": {
                 "chat": {"id": 77},
-                "from": {"username": "tester"},
+                "from": {"id": AUTHORIZED_USER_ID, "username": "tester"},
                 "text": "makan 25000 cash",
             }
         }
@@ -286,6 +282,7 @@ class TestConfirmationFlow:
         body = {
             "callback_query": {
                 "id": "cb_confirm_123",
+                "from": {"id": AUTHORIZED_USER_ID, "is_bot": False},
                 "data": CONFIRM_CALLBACK,
                 "message": {"chat": {"id": 42}, "message_id": 99},
             }
@@ -314,6 +311,7 @@ class TestConfirmationFlow:
         body = {
             "callback_query": {
                 "id": "cb_cancel_456",
+                "from": {"id": AUTHORIZED_USER_ID, "is_bot": False},
                 "data": CANCEL_CALLBACK,
                 "message": {"chat": {"id": 55}, "message_id": 88},
             }
@@ -338,6 +336,7 @@ class TestConfirmationFlow:
         body = {
             "callback_query": {
                 "id": "cb_empty",
+                "from": {"id": AUTHORIZED_USER_ID, "is_bot": False},
                 "data": CONFIRM_CALLBACK,
                 "message": {"chat": {"id": 10}, "message_id": 1},
             }
@@ -360,7 +359,7 @@ class TestConfirmationFlow:
         body = {
             "message": {
                 "chat": {"id": 77},
-                "from": {"username": "tester"},
+                "from": {"id": AUTHORIZED_USER_ID, "username": "tester"},
                 "text": "fix 1 cat=Transport type=needs",
             }
         }
@@ -386,7 +385,7 @@ class TestConfirmationFlow:
         body = {
             "message": {
                 "chat": {"id": 7},
-                "from": {"username": "tester"},
+                "from": {"id": AUTHORIZED_USER_ID, "username": "tester"},
                 "text": "fix 1 src=BNI\nfix 2 cat=Transport",
             }
         }
@@ -408,7 +407,7 @@ class TestConfirmationFlow:
         body = {
             "message": {
                 "chat": {"id": 3},
-                "from": {"username": "tester"},
+                "from": {"id": AUTHORIZED_USER_ID, "username": "tester"},
                 "text": "fix 1 cat=FnB\nmakan siang 50000",
             }
         }
@@ -421,3 +420,24 @@ class TestConfirmationFlow:
         mock_parse.assert_not_called()
         assert mock_send.call_count == 1
         assert "campuran" in mock_send.call_args[0][1]
+
+    def test_rejects_unauthorized_user(self):
+        """Unauthorized user must receive rejection and no parsing/staging occurs."""
+        body = {
+            "message": {
+                "chat": {"id": 888},
+                "from": {"id": 999999999, "username": "intruder"},
+                "text": "makan 25000 cash",
+            }
+        }
+        with (
+            patch("api.webhook.send_message") as mock_send,
+            patch("api.webhook.parse_single_expense") as mock_parse,
+            patch("api.webhook.redis_set_pending") as mock_set,
+        ):
+            handle_update(body)
+
+        mock_parse.assert_not_called()
+        mock_set.assert_not_called()
+        assert mock_send.call_count == 1
+        assert "unauthorized" in mock_send.call_args[0][1].lower()

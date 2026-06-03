@@ -17,13 +17,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_SECRET_TOKEN = os.getenv("TELEGRAM_BOT_SECRET_TOKEN")
 
 
 def set_webhook(base_url: str):
     webhook_url = f"{base_url.rstrip('/')}/api/webhook"
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook"
 
-    payload = json.dumps({"url": webhook_url}).encode("utf-8")
+    if not TELEGRAM_BOT_SECRET_TOKEN:
+        print("TELEGRAM_BOT_SECRET_TOKEN is not set. Set this env var to a strong random value before registering webhook.")
+        sys.exit(1)
+
+    payload = json.dumps({"url": webhook_url, "secret_token": TELEGRAM_BOT_SECRET_TOKEN}).encode("utf-8")
     req = urllib.request.Request(
         api_url,
         data=payload,

@@ -4,16 +4,17 @@ A Telegram bot that logs expenses to Google Sheets using AI-powered natural lang
 
 ## Tech Stack
 
-| Component            | Technology                         |
-| -------------------- | ---------------------------------- |
-| Bot Platform         | Telegram Bot API (Webhook)         |
-| AI Parser (primary)  | Groq (`llama-3.3-70b-versatile`)   |
-| AI Parser (fallback) | Google Gemini (`gemini-2.0-flash`) |
-| Storage              | Google Sheets (`gspread`)          |
-| Pending State        | Upstash Redis (REST, no SDK)       |
-| Auth                 | Google Service Account             |
-| Runtime              | Python 3.12 (Vercel Serverless)    |
-| Hosting              | Vercel                             |
+| Component            | Technology                              |
+| -------------------- | --------------------------------------- |
+| Bot Platform         | Telegram Bot API (Webhook)              |
+| AI Parser (primary)  | Groq (`llama-3.3-70b-versatile`)        |
+| AI Parser (fallback) | Google Gemini (`gemini-2.0-flash`)      |
+| Storage              | Google Sheets (`gspread`)               |
+| Pending State        | Upstash Redis (REST, no SDK)            |
+| Auth                 | Google Service Account                  |
+| Webhook Security     | Telegram secret header + user allowlist |
+| Runtime              | Python 3.12 (Vercel Serverless)         |
+| Hosting              | Vercel                                  |
 
 ## Flow
 
@@ -29,6 +30,8 @@ Telegram
     ▼
 Vercel Function (api/webhook.py)
     │
+    ├─ Verify `X-Telegram-Bot-Api-Secret-Token` header (fail-closed)
+    ├─ Allow only `TELEGRAM_USER_ID`
     ├─ Parse incoming update
     │
     ├─ callback_query (button tap):
@@ -74,6 +77,7 @@ fix 1 desc="Toko Desa - Ultramilk 1L" amount=30000
 ```
 
 Rules:
+
 - Row number is **1-based** (matches the preview list)
 - Multiple `fix` lines in one message are applied atomically
 - Mixing `fix` lines with regular text is rejected
@@ -93,15 +97,15 @@ Rules:
 
 ### Field validation
 
-| Field       | Accepted values |
-| ----------- | --------------- |
-| `category`  | `Groceries`, `Supplies`, `Transport`, `Utilities`, `Entertainment`, `Health`, `FnB`, `Shopping`, `Bill`, `Donation`, `Social`, `Other` (case-insensitive) |
-| `type`      | `needs` or `wants` |
-| `date`      | `YYYY-MM-DD`, or natural language: `kemarin`, `hari ini`, `besok`, `lusa`, `yesterday`, `today`, `tomorrow` |
-| `amount`    | Integer; strips `.` `,` separators and `rb`/`k` suffixes (e.g. `50.000`, `50rb`, `50k` all → `50000`) |
-| `desc`      | Any text; use double quotes to preserve spaces: `desc="Toko Desa - Ultramilk 1L"` |
-| `source`    | Any non-empty text |
-| `tag`       | Any text (can be empty) |
+| Field      | Accepted values                                                                                                                                           |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `category` | `Groceries`, `Supplies`, `Transport`, `Utilities`, `Entertainment`, `Health`, `FnB`, `Shopping`, `Bill`, `Donation`, `Social`, `Other` (case-insensitive) |
+| `type`     | `needs` or `wants`                                                                                                                                        |
+| `date`     | `YYYY-MM-DD`, or natural language: `kemarin`, `hari ini`, `besok`, `lusa`, `yesterday`, `today`, `tomorrow`                                               |
+| `amount`   | Integer; strips `.` `,` separators and `rb`/`k` suffixes (e.g. `50.000`, `50rb`, `50k` all → `50000`)                                                     |
+| `desc`     | Any text; use double quotes to preserve spaces: `desc="Toko Desa - Ultramilk 1L"`                                                                         |
+| `source`   | Any non-empty text                                                                                                                                        |
+| `tag`      | Any text (can be empty)                                                                                                                                   |
 
 ## Sheet Columns
 
@@ -117,16 +121,29 @@ Rules:
 - **Batch**: send multiple expenses at once, one per line (max 20); lines that fail to parse are shown in the preview but not staged
 - Wrap description in double quotes to preserve it as-is: `"Toko Desa - Ultramilk 1L" cash 30000`
 
+## Webhook Security
+
+- Incoming webhook requests must include a valid `X-Telegram-Bot-Api-Secret-Token` matching `TELEGRAM_BOT_SECRET_TOKEN`
+- Only updates sent by `TELEGRAM_USER_ID` are processed; other users receive an unauthorized response message
+- Both checks are fail-closed (invalid/missing secret or unauthorized sender is rejected)
+
 ## Setup
 
 ### Prerequisites
 
 - Telegram Bot Token from [@BotFather](https://t.me/BotFather)
+- Telegram user id allowed to use the bot (`TELEGRAM_USER_ID`, numeric)
 - Groq API Key from [console.groq.com](https://console.groq.com/keys)
 - Google Gemini API Key from [aistudio.google.com](https://aistudio.google.com/apikey)
 - Google Service Account `credentials.json` with Sheets & Drive API enabled
 - Upstash Redis database from [console.upstash.com](https://console.upstash.com/) (free tier is sufficient)
 - [Vercel CLI](https://vercel.com/docs/cli) installed
+
+Generate a webhook secret token (example):
+
+```bash
+openssl rand -hex 32
+```
 
 ### Deploy to Vercel
 
@@ -143,6 +160,8 @@ vercel
 
 # Set environment variables (Vercel dashboard or CLI):
 vercel env add TELEGRAM_BOT_TOKEN
+vercel env add TELEGRAM_BOT_SECRET_TOKEN
+vercel env add TELEGRAM_USER_ID
 vercel env add GROQ_API_KEY
 vercel env add GEMINI_API_KEY
 vercel env add SHEET_NAME                  # default: "Expenses"
@@ -164,6 +183,8 @@ After deploying, register the webhook with Telegram:
 ```bash
 python set_webhook.py https://your-app.vercel.app
 ```
+
+`set_webhook.py` sends both webhook URL and `TELEGRAM_BOT_SECRET_TOKEN` to Telegram.
 
 To point the bot at a preview deployment for testing before merging:
 
@@ -188,17 +209,28 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and fill in your values.
+Set required environment variables in your shell before running locally:
+
+```bash
+export TELEGRAM_BOT_TOKEN="..."
+export TELEGRAM_BOT_SECRET_TOKEN="..."
+export TELEGRAM_USER_ID="123456789"
+export GROQ_API_KEY="..."
+export GEMINI_API_KEY="..."
+export GOOGLE_CREDENTIALS_BASE64="..."
+export UPSTASH_REDIS_REST_URL="..."
+export UPSTASH_REDIS_REST_TOKEN="..."
+```
 
 ## Testing
 
-Unit tests mock all AI and network calls — no credentials needed. E2E tests start a local HTTP server and hit real Groq/Gemini/Sheets APIs.
+Unit tests mock AI/network calls. E2E tests start a local HTTP server and hit real Groq/Gemini/Sheets APIs.
 
 ```bash
 # Fast unit tests (no credentials needed)
 pytest tests/test_webhook_batch.py -v
 
-# Full integration tests (requires .env)
+# Full integration tests (requires env vars above)
 pytest tests/test_webhook_e2e.py -v
 ```
 

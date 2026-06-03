@@ -32,6 +32,12 @@ def log_event(level: str, message: str, *args):
 
 # Config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Secret token to validate incoming webhook requests (X-Telegram-Bot-Api-Secret-Token)
+TELEGRAM_BOT_SECRET_TOKEN = os.getenv("TELEGRAM_BOT_SECRET_TOKEN")
+# Only accept updates from this Telegram user id (string or integer). If set, updates
+# from other users will be rejected and (optionally) an unauthorized reply is sent.
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SHEET_NAME = os.getenv("SHEET_NAME", "Expense Tracker")
@@ -46,6 +52,12 @@ GEMINI_MODEL = "gemini-2.0-flash"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 MAX_BATCH_LINES = 20
 REQUIRED_FIELDS = {"date", "description", "category", "type", "tag", "source", "amount"}
+
+# Normalize TELEGRAM_USER_ID to int when provided
+try:
+    TELEGRAM_USER_ID_INT = int(TELEGRAM_USER_ID) if TELEGRAM_USER_ID else None
+except Exception:
+    TELEGRAM_USER_ID_INT = None
 
 # Callback data constants for inline keyboard buttons
 CONFIRM_CALLBACK = "cb_confirm"
@@ -195,6 +207,25 @@ def call_ai_with_retry(prompt: str) -> str:
     except Exception as e:
         logger.error(f"Gemini fallback also failed: {e}")
         raise Exception("Semua AI provider gagal. Coba lagi nanti.")
+
+
+def _extract_sender_and_chat_from_update(update: dict) -> tuple[int | None, int | None]:
+    """Return (sender_id, chat_id) extracted from a Telegram Update payload.
+    Works for both message and callback_query updates.
+    """
+    if not isinstance(update, dict):
+        return None, None
+    cq = update.get("callback_query")
+    if cq:
+        sender_id = cq.get("from", {}).get("id")
+        chat_id = cq.get("message", {}).get("chat", {}).get("id")
+        return sender_id, chat_id
+    msg = update.get("message")
+    if msg:
+        sender_id = msg.get("from", {}).get("id")
+        chat_id = msg.get("chat", {}).get("id")
+        return sender_id, chat_id
+    return None, None
 
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None):
@@ -456,6 +487,30 @@ def parse_single_expense(line: str, today: str) -> dict:
 
 
 def handle_update(body: dict):
+    # Authorization: only allow configured TELEGRAM_USER_ID (fail-closed when set)
+    try:
+        sender_id, chat_id_from_update = _extract_sender_and_chat_from_update(body)
+        if TELEGRAM_USER_ID_INT is not None:
+            if sender_id != TELEGRAM_USER_ID_INT:
+                # If it's a callback query, acknowledge it to stop spinner
+                cq = body.get("callback_query")
+                if cq and cq.get("id"):
+                    try:
+                        answer_callback_query(cq.get("id"))
+                    except Exception:
+                        pass
+                # Inform the chat that it's unauthorized (best-effort)
+                if chat_id_from_update:
+                    try:
+                        send_message(chat_id_from_update, "Unauthorized. This bot accepts messages only from the owner.")
+                    except Exception:
+                        pass
+                log_event("WARNING", "Rejected update from unauthorized sender=%s", sender_id)
+                return
+    except Exception:
+        # If authorization check fails unexpectedly, deny processing (fail-closed)
+        log_event("ERROR", "Authorization check failed - rejecting update")
+        return
     # ── Callback query (inline button tap) ───────────────────────────────────
     callback_query = body.get("callback_query")
     if callback_query:
@@ -635,6 +690,31 @@ class handler(BaseHTTPRequestHandler):
         return
 
     def do_POST(self):
+        # Validate webhook secret header before reading body (fail-closed)
+        secret_header = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if not TELEGRAM_BOT_SECRET_TOKEN:
+            logger.error("TELEGRAM_BOT_SECRET_TOKEN not configured; rejecting webhook POST")
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": "server misconfigured"}).encode())
+            return
+
+        # If secret token is set, require it — except allow bypass for local test clients
+        client_ip = getattr(self, 'client_address', (None, None))[0]
+        allowed_local = {"127.0.0.1", "::1", "localhost"}
+        if secret_header != TELEGRAM_BOT_SECRET_TOKEN:
+            if client_ip in allowed_local:
+                log_event("INFO", "Bypassing secret header check for local client %s", client_ip)
+            else:
+                log_event("WARNING", "Rejected webhook POST due to invalid secret header from %s", client_ip)
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "unauthorized"}).encode())
+                return
+
+        # Secret validated — safe to read body
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         log_event("INFO", "Webhook POST received content_length=%s", content_length)
@@ -646,7 +726,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.exception("Webhook handler failed before response")
 
-        # Always return 200 to Telegram to avoid retries
+        # Always return 200 to Telegram to avoid retries for valid secret
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
