@@ -46,8 +46,12 @@ SHEET_NAME = os.getenv("SHEET_NAME", "Expense Tracker")
 groq_client = Groq(api_key=GROQ_API_KEY)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.0-flash"
+# Preferred choice: GPT-OSS 120B for best instruction following on JSON extraction.
+# Fallback: Qwen3 family on Groq is a cheaper multilingual alternative; the current
+# Groq catalog exposes `qwen/qwen3-32b` rather than a literal 27B model name.
+DEFAULT_GROQ_MODELS = ("openai/gpt-oss-120b", "qwen/qwen3-32b")
+GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODELS[0])
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 MAX_BATCH_LINES = 20
@@ -172,13 +176,39 @@ def get_worksheet():
     return gc.open(SHEET_NAME).sheet1
 
 
+def _iter_groq_models() -> list[str]:
+    """Return the preferred Groq model list, honoring env overrides."""
+    preferred = os.getenv("GROQ_MODEL")
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    candidates.extend(DEFAULT_GROQ_MODELS)
+    # Deduplicate while preserving the configured order.
+    seen = set()
+    ordered = []
+    for model in candidates:
+        if model and model not in seen:
+            ordered.append(model)
+            seen.add(model)
+    return ordered
+
+
 def call_groq(prompt: str) -> str:
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-    )
-    return response.choices[0].message.content.strip()
+    last_error = None
+    for model_name in _iter_groq_models():
+        try:
+            response = groq_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:  # pragma: no cover - exercised via real API access
+            last_error = exc
+            log_event("WARNING", "Groq model %s failed: %s", model_name, exc)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No Groq model candidates were available")
 
 
 def call_gemini(prompt: str) -> str:

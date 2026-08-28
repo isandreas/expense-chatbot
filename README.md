@@ -7,7 +7,9 @@ A Telegram bot that logs expenses to Google Sheets using AI-powered natural lang
 | Component            | Technology                              |
 | -------------------- | --------------------------------------- |
 | Bot Platform         | Telegram Bot API (Webhook)              |
-| AI Parser (primary)  | Groq (`llama-3.3-70b-versatile`)        |
+| AI Parser (primary)  | Groq (`openai/gpt-oss-120b`)            |
+| AI Parser (fallback) | Groq (`qwen/qwen3-32b`)                 |
+| AI Parser (final)    | Google Gemini (`gemini-3.6-flash`)      |
 | AI Parser (fallback) | Google Gemini (`gemini-2.0-flash`)      |
 | Storage              | Google Sheets (`gspread`)               |
 | Pending State        | Upstash Redis (REST, no SDK)            |
@@ -134,6 +136,8 @@ Rules:
 - Telegram Bot Token from [@BotFather](https://t.me/BotFather)
 - Telegram user id allowed to use the bot (`TELEGRAM_USER_ID`, numeric)
 - Groq API Key from [console.groq.com](https://console.groq.com/keys)
+- Set `GROQ_MODEL` optionally to a supported model such as `openai/gpt-oss-120b` or `qwen/qwen3-32b` if you want to override the default
+- Set `GEMINI_MODEL` to a supported Gemini name such as `gemini-3.6-flash` if you want to override the default
 - Google Gemini API Key from [aistudio.google.com](https://aistudio.google.com/apikey)
 - Google Service Account `credentials.json` with Sheets & Drive API enabled
 - Upstash Redis database from [console.upstash.com](https://console.upstash.com/) (free tier is sufficient)
