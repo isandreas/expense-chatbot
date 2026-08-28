@@ -131,6 +131,14 @@ class TestConstants:
     def test_max_batch_lines_is_twenty(self):
         assert MAX_BATCH_LINES == 20
 
+    def test_default_groq_model_uses_supported_structured_json_model(self):
+        import api.webhook as webhook
+        assert webhook.GROQ_MODEL in {
+            "qwen/qwen3-32b",
+            "openai/gpt-oss-120b",
+        }
+        assert webhook.GROQ_MODEL != "llama-3.3-70b-versatile"
+
 
 class TestFixCommand:
     """Unit tests for parse_fix_command and parse_all_fix_commands."""
